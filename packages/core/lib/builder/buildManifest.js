@@ -6,9 +6,11 @@ const slash = require("../utils/fixPathSlashes");
 const builders = require("zero-builders-map");
 const nodeignore = require("../utils/zeroignore");
 const fileToLambda = require("../utils/fileToLambda");
+const { isMiddleware } = require("../utils/middlewares");
 const pythonFirstRun = require("zero-handlers-map").handlers["lambda:python"]
   .firstrun;
 var pythonFirstRunCompleted = false;
+const { each } = require('lodash');
 
 var getLambdaID = function(path) {
   return require("crypto")
@@ -31,6 +33,7 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
   buildPath = buildPath.endsWith("/") ? buildPath : buildPath + "/";
   var zeroignore = nodeignore();
 
+  var middlewares = {};
   var date = Date.now();
   var files = await getFiles(buildPath);
   files = files.filter(
@@ -49,6 +52,7 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
       file = slash(file);
       // if old manifest is given and a file filter is given, we skip those not in filter
       if (oldManifest && fileFilter && fileFilter.length) {
+        // should anything with middlewares be handled here?
         if (fileFilter.indexOf(file) === -1) {
           var endpoint = oldManifest.lambdas.find(lambda => {
             return lambda.entryFile === file;
@@ -60,7 +64,19 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
       }
       // first check if filename (or the folder it resides in) is in zeroignore, ignore those.
       var fileRelative = relativePath(file);
-      if (zeroignore.ignores(fileRelative)) return false;
+      
+      // prior to zeroignore as it is also ignored
+      if(isMiddleware(fileRelative)) {
+        debug('middleware', fileRelative);
+        middlewares[fileRelative] = builders["lambda:js"]
+          .getRelatedFiles(fileRelative);
+        return false;
+      }
+
+      if (zeroignore.ignores(fileRelative)) {
+        debug('ignoring', fileRelative);
+        return false;
+      }
 
       switch (extension) {
         // for all these extensions just return lambda type
@@ -159,7 +175,15 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
     });
   });
 
-  return { lambdas, fileToLambdas };
+  var fileToMiddlewares = {};
+  each(middlewares, (depFiles, rootFile) => {
+    depFiles.forEach(file => {
+      fileToMiddlewares[file] = fileToMiddlewares[file] || [];
+      fileToMiddlewares[file].push(rootFile);
+    });
+  });
+
+  return { lambdas, fileToLambdas, middlewares };
 }
 
 // get all relative files imported by this entryFile

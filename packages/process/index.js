@@ -5,7 +5,7 @@ const path = require("path"),
   YouchTerminal = require("youch-terminal"),
   express = require("express");
 const FETCH = require("node-fetch");
-const debug = require("debug")("core");
+const debug = require("debug")("process");
 
 const GLOBALS = require("./globals");
 const session = require("zero-express-session");
@@ -17,6 +17,7 @@ process.on("unhandledRejection", (reason, p) => {
 });
 
 module.exports = async (handler, endpointData, buildInfo) => {
+  debug({ handler, endpointData, buildInfo });
   try {
     buildInfo = JSON.parse(buildInfo);
   } catch (e) {}
@@ -49,6 +50,7 @@ function startServer(handler, endpointData, buildInfo) {
   return new Promise((resolve, reject) => {
     const file = path.resolve(endpointData.entryFile);
     const app = express();
+    const isMiddleware = handler.name === 'middleware';
 
     app.disable("x-powered-by");
 
@@ -57,6 +59,12 @@ function startServer(handler, endpointData, buildInfo) {
 
     app.use(require("body-parser").urlencoded({ extended: true }));
     app.use(require("body-parser").json());
+
+    if(isMiddleware) {
+      debug('is middleware');
+      handler(app, file, BundlePath, basePath, BundleInfo)  
+    }
+
     // change $path into express-style :path/
     const pathPattern = endpointData.path
       .split("/")
@@ -66,7 +74,7 @@ function startServer(handler, endpointData, buildInfo) {
       })
       .join("/");
 
-    app.all(pathPattern, (req, res) => {
+    app.all(pathPattern, (req, res, next) => {
       try {
         var globals = Object.assign(
           {
@@ -86,6 +94,10 @@ function startServer(handler, endpointData, buildInfo) {
           GLOBALS
         );
 
+        if(isMiddleware) {
+          next();
+          return;
+        }
         // we run the handler in it's own VM so we can inject some variables (__dirname and __filename) and global function (fetch()) to it.
 
         vm.runInNewContext(

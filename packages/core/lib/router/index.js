@@ -17,16 +17,18 @@ const { handlers, getHandler } = require("zero-handlers-map");
 const builders = require("zero-builders-map");
 const staticHandler = handlers["static"].handler;
 const fs = require("fs");
-const debug = require("debug")("core");
+const debug = require("debug")("core:router");
 const ora = require("ora");
 const fork = require("child_process").fork;
 const bundlerProgram = require.resolve("zero-builder-process");
+const { map, get, noop } = require('lodash');
 
 var lambdaIdToHandler = {}; // for proxy paths, this holds their handler(req, res)
+var middlewareIdToHandler = {}; // for proxy paths, this holds their middlewareHandler(app)
 var lambdaIdToBundleInfo = {}; // holds bundle info for each lambda if generated or it generates one
 var updatedManifest = false;
 
-async function proxyLambdaRequest(req, res, endpointData) {
+async function proxyLambdaRequest(req, res, endpointData, middlewares, app) {
   const spinner = ora({
     color: "green",
     spinner: "star"
@@ -54,6 +56,31 @@ async function proxyLambdaRequest(req, res, endpointData) {
       endpointData,
       lambdaIdToBundleInfo[lambdaID] ? lambdaIdToBundleInfo[lambdaID].info : ""
     );
+  }
+  if(Object.keys(middlewares).length) {
+    debug('loading middlewares')
+    // load and run all middlewares if there are any
+    await Promise.all(map(middlewares, async (deps, entryFile) => {
+      debug('loading middleware', entryFile);
+      const middlewareID = getLambdaID(entryFile);
+      if (!middlewareIdToHandler[middlewareID]){
+        const { middleware: middlewareHandlerApp } = await getHandler('lambda:js');
+        middlewareIdToHandler[middlewareID] = await middlewareHandlerApp([
+          '',
+          entryFile,
+          'lambda:js',
+          process.env.SERVERADDRESS,
+          "zero-builds/" + middlewareID
+        ]);
+        debug('middleware loaded', entryFile, middlewareID);
+      }
+      // run middleware
+      const middlewareHandler = get(middlewareIdToHandler, [middlewareID], noop);
+      debug({ middlewareHandler });
+      middlewareHandler(app);
+      debug('middlware ran', entryFile);
+      return;
+    }))
   }
   if (spinner.isSpinning) {
     spinner.succeed(url.resolve("/", endpointData.path) + " ready");
@@ -169,9 +196,9 @@ module.exports = buildPath => {
     next();
   });
 
-  var manifest = { lambdas: [], fileToLambdas: {} };
+  var manifest = { lambdas: [], fileToLambdas: {}, middlewares: {}, fileToMiddlewares: {} };
   var forbiddenStaticFiles = [];
-  app.all("*", async (request, response) => {
+  app.all("*", async (req, res) => {
     // don't serve requests until first manifest is available
     if (!updatedManifest) await waitForManifest();
 
@@ -179,9 +206,9 @@ module.exports = buildPath => {
       manifest,
       forbiddenStaticFiles,
       buildPath,
-      request.url
+      req.url
     );
-    debug("match", request.url, endpointData);
+    debug("match", req.url, endpointData);
     if (endpointData === "404") {
       return response
         .status(404)
@@ -193,10 +220,16 @@ module.exports = buildPath => {
     }
     if (endpointData) {
       // call relevant handler as defined in manifest
-      return proxyLambdaRequest(request, response, endpointData);
+      return proxyLambdaRequest({
+        req,
+        res,
+        endpointData,
+        middlewares: manifest.middlewares,
+        app
+      });
     }
     // catch all handler
-    return staticHandler(request, response);
+    return staticHandler(req, res);
   });
 
   var listener = app.listen(process.env.PORT, () => {
