@@ -20,7 +20,9 @@ const DEFAULTIGNORES = [
   "package-lock.json",
   "Dockerfile",
   "requirements.txt",
-  "zero-deploy"
+  "zero-deploy",
+  "zero-middlewares*",
+  "zero-middlewares/*"
 ];
 
 // keep global instance of zeroignore to avoid

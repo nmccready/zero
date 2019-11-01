@@ -5,9 +5,11 @@ const debug = require("debug")("core");
 const slash = require("../utils/fixPathSlashes");
 const builders = require("zero-builders-map");
 const nodeignore = require("../utils/zeroignore");
+const { isMiddleware } = require("../utils/middlewares");
 const pythonFirstRun = require("zero-handlers-map").handlers["lambda:python"]
   .firstrun;
 var pythonFirstRunCompleted = false;
+const { each } = require('lodash');
 
 async function getFiles(baseSrc) {
   //baseSrc = baseSrc.endsWith("/")?baseSrc:(baseSrc+"/")
@@ -20,6 +22,7 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
   buildPath = buildPath.endsWith("/") ? buildPath : buildPath + "/";
   var zeroignore = nodeignore();
 
+  var middlewares = {};
   var date = Date.now();
   var files = await getFiles(buildPath);
   files = files.filter(
@@ -34,6 +37,7 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
       file = path.normalize(file);
       // if old manifest is given and a file filter is given, we skip those not in filter
       if (oldManifest && fileFilter && fileFilter.length) {
+        // should anything with middlewares be handled here?
         var normalizedFile = file;
         if (fileFilter.indexOf(normalizedFile) === -1) {
           var endpoint = oldManifest.lambdas.find(lambda => {
@@ -46,7 +50,19 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
       }
       // first check if filename (or the folder it resides in) is in zeroignore, ignore those.
       var fileRelative = relativePath(file);
-      if (zeroignore.ignores(fileRelative)) return false;
+      
+      // prior to zeroignore as it is also ignored
+      if(isMiddleware(fileRelative)) {
+        debug('middleware', fileRelative);
+        middlewares[fileRelative] = builders["lambda:js"]
+          .getRelatedFiles(fileRelative);
+        return false;
+      }
+
+      if (zeroignore.ignores(fileRelative)) {
+        debug('ignoring', fileRelative);
+        return false;
+      }
 
       switch (extension) {
 
@@ -136,6 +152,12 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
 
   // get all related files (imports/requires) of this lambda
   lambdas = lambdas.map(endpoint => {
+    /*
+      endpoint at this moment is:
+        [urlPath, relativeFilePath, lambdaType]
+      to become:
+        [urlPath, relativeFilePath, lambdaType, [relativeFilePath, ...dependencyTreePaths]]
+    */
     endpoint.push(
       [endpoint[1]].concat(dependencyTree(endpoint[2], endpoint[1]))
     );
@@ -153,7 +175,15 @@ async function buildManifest(buildPath, oldManifest, fileFilter) {
     });
   });
 
-  return { lambdas, fileToLambdas };
+  var fileToMiddlewares = {};
+  each(middlewares, (depFiles, rootFile) => {
+    depFiles.forEach(file => {
+      fileToMiddlewares[file] = fileToMiddlewares[file] || [];
+      fileToMiddlewares[file].push(rootFile);
+    });
+  });
+
+  return { lambdas, fileToLambdas, middlewares };
 }
 
 // get all relative files imported by this entryFile

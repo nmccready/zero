@@ -5,7 +5,7 @@ const path = require("path"),
   YouchTerminal = require("youch-terminal"),
   express = require("express");
 const FETCH = require("node-fetch");
-const debug = require("debug")("core");
+const debug = require("debug")("process");
 
 const GLOBALS = require("./globals");
 const session = require("zero-express-session");
@@ -26,6 +26,16 @@ module.exports = async (
   BundleInfo,
   isModule
 ) => {
+  debug({
+    handler,
+    basePath,
+    entryFile,
+    lambdaType,
+    serverAddress,
+    BundlePath,
+    BundleInfo,
+    isModule
+  });
   if (!basePath && basePath !== "") throw new Error("No basePath provided.");
   if (!entryFile) throw new Error("No entry file provided.");
   if (!lambdaType) throw new Error("No lambda type provided.");
@@ -93,6 +103,7 @@ function startServer(
   return new Promise((resolve, reject) => {
     const file = path.resolve(entryFile);
     const app = express();
+    const isMiddleware = handler.name === 'middleware';
 
     app.disable("x-powered-by");
 
@@ -101,6 +112,12 @@ function startServer(
 
     app.use(require("body-parser").urlencoded({ extended: true }));
     app.use(require("body-parser").json());
+
+    if(isMiddleware) {
+      debug('is middleware');
+      handler(app, file, BundlePath, basePath, BundleInfo)  
+    }
+
     // change $path into express-style :path/
     const pathPattern = basePath
       .split("/")
@@ -110,7 +127,7 @@ function startServer(
       })
       .join("/");
 
-    app.all(pathPattern, (req, res) => {
+    app.all(pathPattern, (req, res, next) => {
       try {
         var globals = Object.assign(
           {
@@ -133,6 +150,10 @@ function startServer(
           GLOBALS
         );
 
+        if(isMiddleware) {
+          next();
+          return;
+        }
         // we run the handler in it's own VM so we can inject some variables (__dirname and __filename) and global function (fetch()) to it.
 
         vm.runInNewContext(
